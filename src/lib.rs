@@ -8,7 +8,7 @@
 //!
 //! Designed for use with [libftd2xx-rs] and [libftd2xx-cc1101] to interface with a [CC1101] RF
 //! transceiver via FTDI SPI interface. However, any properly configured [`std::io`] interface
-//! that behaves as a 433.94 MHz, 2.2254 kBaud, OOK RF modem can be used instead.
+//! that functions as a 433.94 MHz, 2.2254 kBaud, OOK RF modem can be used instead.
 //!
 //! # Usage
 //! Simply add this crate as a dependency in your `Cargo.toml`.
@@ -68,12 +68,12 @@ enum Symbol {
 ///
 /// Designed to block and continuously scan for bit patterns containing coded symbols. Incoming
 /// bytes do not need to be synchronized to sync words.
-pub struct SymReader<'a, R: io::Read> {
-    reader: BitReader<&'a mut R, BigEndian>,
+pub struct SymReader<R: io::Read> {
+    reader: BitReader<R, BigEndian>,
     window: u8,
 }
 
-impl<'a, R: io::Read> SymReader<'a, R> {
+impl<R: io::Read> SymReader<R> {
     /// Constructs new SymReader wrapped around [`io::Read`] trait.
     ///
     /// # Example
@@ -90,7 +90,7 @@ impl<'a, R: io::Read> SymReader<'a, R> {
     /// # let mut cc1101_reader = cc1101.reader::<32>();
     /// let mut sym_reader = SymReader::new(&mut cc1101_reader);
     /// ```
-    pub fn new(reader: &'a mut R) -> Self {
+    pub fn new(reader: R) -> Self {
         Self {
             reader: BitReader::endian(reader, BigEndian),
             window: 0,
@@ -225,12 +225,207 @@ impl<'a, R: io::Read> SymReader<'a, R> {
     }
 }
 
-/// Bit-level symbol writer for generating messages in Revo RF protocol.
-pub struct SymWriter<'a, W: io::Write> {
-    writer: BitWriter<&'a mut W, BigEndian>,
+/// Result of one [`SymReaderFsm::poll`] iteration.
+pub enum SymReaderFsmPoll {
+    /// Complete decoded message
+    Msg((u16, NexusCmd)),
+    /// I/O error
+    Err(io::Error),
+    /// One bit processed successfully
+    Pending,
 }
 
-impl<'a, W: io::Write> SymWriter<'a, W> {
+#[repr(u8)]
+enum SymReaderFsmState {
+    Sync,
+    Addr,
+    Cmd,
+}
+
+/// Finite State Machine version of [`SymReader`].
+///
+/// Processes one bit with each poll call. Useful for applications that do not want to block.
+pub struct SymReaderFsm<R: io::Read> {
+    reader: BitReader<R, BigEndian>,
+    window: u8,
+    counter: u8,
+    decode_value: u16,
+    addr: u16,
+    state: SymReaderFsmState,
+    read_until: bool,
+}
+
+impl<R: io::Read> SymReaderFsm<R> {
+    /// Constructs new SymReaderFsm wrapped around [`io::Read`] trait.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use nexus_revo_io::SymReaderFsm;
+    /// # use libftd2xx::{Ft232h, Ftdi};
+    /// # use libftd2xx_cc1101::CC1101;
+    /// # use std::convert::TryInto;
+    /// # use std::io::Read;
+    /// # let ft = Ftdi::new().expect("unable to Ftdi::new");
+    /// # let mut ftdi: Ft232h = ft.try_into().expect("not a Ft232h");
+    /// # let mut cc1101 = CC1101::new(&mut ftdi);
+    /// # let mut cc1101_reader = cc1101.reader::<32>();
+    /// let mut sym_reader = SymReaderFsm::new(&mut cc1101_reader);
+    /// ```
+    pub fn new(reader: R) -> Self {
+        Self {
+            reader: BitReader::endian(reader, BigEndian),
+            window: 0,
+            counter: 0,
+            decode_value: 0,
+            addr: 0,
+            state: SymReaderFsmState::Sync,
+            read_until: false,
+        }
+    }
+
+    fn read_bit(&mut self) -> io::Result<bool> {
+        let bit = self.reader.read_bit()?;
+        self.window <<= 1;
+        self.window |= bit as u8;
+        Ok(bit)
+    }
+
+    fn check_sync_symbol(&self) -> bool {
+        (self.window >> 1) & 0xf == 0x0
+    }
+
+    fn check_bit_symbol(&self) -> Option<bool> {
+        match (self.window >> 1) & 0xf {
+            0x8 => Some(false),
+            0xe => Some(true),
+            _ => None,
+        }
+    }
+
+    fn handle_bit_symbol(&mut self) -> Option<bool> {
+        self.counter -= 1;
+        if let Some(bit) = self.check_bit_symbol() {
+            self.decode_value |= (bit as u16) << self.counter;
+            Some(self.counter == 0)
+        } else {
+            None
+        }
+    }
+
+    fn decode_cmd(&self) -> Option<NexusCmd> {
+        let b = self.decode_value as u8;
+        if b & 0b1000 == 0 || b & 0x7 != (b >> 4) & 0x7 {
+            None
+        } else {
+            FromPrimitive::from_u8(b & 0x7)
+        }
+    }
+
+    fn start_sync(&mut self) {
+        self.state = SymReaderFsmState::Sync;
+    }
+
+    fn start_addr(&mut self) {
+        self.state = SymReaderFsmState::Addr;
+        self.counter = 16;
+        self.decode_value = 0;
+    }
+
+    fn start_cmd(&mut self) {
+        self.state = SymReaderFsmState::Cmd;
+        self.counter = 8;
+        self.decode_value = 0;
+    }
+
+    fn poll_sync(&mut self) {
+        if self.check_sync_symbol() {
+            self.start_addr();
+        } else {
+            self.start_sync();
+        }
+    }
+
+    fn poll_addr(&mut self) {
+        if let Some(done) = self.handle_bit_symbol() {
+            if done {
+                self.addr = self.decode_value;
+                self.start_cmd();
+            }
+        } else {
+            self.poll_sync();
+        }
+    }
+
+    fn poll_cmd(&mut self) -> SymReaderFsmPoll {
+        if let Some(done) = self.handle_bit_symbol() {
+            if done {
+                self.start_sync();
+                if let Some(cmd) = self.decode_cmd() {
+                    return SymReaderFsmPoll::Msg((self.addr, cmd));
+                }
+            }
+        } else {
+            self.poll_sync();
+        }
+
+        SymReaderFsmPoll::Pending
+    }
+
+    /// Processes one bit of input, returning a valid message, an error, or pending. May be called
+    /// repeatedly to continuously process incoming messages.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use nexus_revo_io::{SymReaderFsm, SymReaderFsmPoll};
+    /// # use libftd2xx::{Ft232h, Ftdi};
+    /// # use libftd2xx_cc1101::CC1101;
+    /// # use std::convert::TryInto;
+    /// # use std::io::Read;
+    /// # let ft = Ftdi::new().expect("unable to Ftdi::new");
+    /// # let mut ftdi: Ft232h = ft.try_into().expect("not a Ft232h");
+    /// # let mut cc1101 = CC1101::new(&mut ftdi);
+    /// # let mut cc1101_reader = cc1101.reader::<32>();
+    /// # let mut sym_reader = SymReaderFsm::new(&mut cc1101_reader);
+    /// loop {
+    ///     match sym_reader.poll() {
+    ///         SymReaderFsmPoll::Msg(msg) => println!("{:x?} {:?}", msg.0, msg.1),
+    ///         SymReaderFsmPoll::Err(e) => panic!("poll failure: {:?}", e),
+    ///         SymReaderFsmPoll::Pending => {}
+    ///     }
+    /// }
+    /// ```
+    pub fn poll(&mut self) -> SymReaderFsmPoll {
+        let bit = match self.read_bit() {
+            Ok(bit) => bit,
+            Err(e) => return SymReaderFsmPoll::Err(e),
+        };
+
+        if bit != self.read_until {
+            return SymReaderFsmPoll::Pending;
+        }
+
+        self.read_until = !self.read_until;
+
+        if !self.read_until {
+            match self.state {
+                SymReaderFsmState::Sync => self.poll_sync(),
+                SymReaderFsmState::Addr => self.poll_addr(),
+                SymReaderFsmState::Cmd => return self.poll_cmd(),
+            }
+        }
+
+        SymReaderFsmPoll::Pending
+    }
+}
+
+/// Bit-level symbol writer for generating messages in Revo RF protocol.
+pub struct SymWriter<W: io::Write> {
+    writer: BitWriter<W, BigEndian>,
+}
+
+impl<W: io::Write> SymWriter<W> {
     /// Constructs new SymWriter wrapped around [`io::Write`] trait.
     ///
     /// # Example
@@ -247,7 +442,7 @@ impl<'a, W: io::Write> SymWriter<'a, W> {
     /// # let mut cc1101_writer = cc1101.writer::<32>();
     /// let mut sym_writer = SymWriter::new(&mut cc1101_writer);
     /// ```
-    pub fn new(writer: &'a mut W) -> Self {
+    pub fn new(writer: W) -> Self {
         Self {
             writer: BitWriter::endian(writer, BigEndian),
         }

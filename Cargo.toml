@@ -15,14 +15,12 @@ edition = "2018"
 maintenance = { status = "experimental" }
 
 [dependencies]
-libftd2xx = { git = "https://github.com/CirrusNeptune/libftd2xx-rs", branch = "mpsse-macro" }
-libftd2xx-cc1101 = { git = "https://github.com/CirrusNeptune/libftd2xx-cc1101", branch = "main" }
-static_assertions = "1.1.0"
-log = "~0.4.11"
-pretty_env_logger = "~0.4.0"
 bitstream-io = "^1.0.0"
 num-derive = "^0.3.3"
 num-traits = "^0.2.14"
 
 [dev-dependencies]
 version-sync = "~0.9.2"
+pretty_env_logger = "~0.4.0"
+libftd2xx = { git = "https://github.com/CirrusNeptune/libftd2xx-rs", branch = "mpsse-macro" }
+libftd2xx-cc1101 = { git = "https://github.com/CirrusNeptune/libftd2xx-cc1101", branch = "main" }
