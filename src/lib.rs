@@ -31,7 +31,7 @@
 
 #![deny(missing_docs, unsafe_code, warnings)]
 
-use bitstream_io::{BitRead, BitWrite, BitReader, BitWriter, BigEndian};
+use bitstream_io::{BigEndian, BitRead, BitReader, BitWrite, BitWriter};
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 use std::io;
@@ -191,16 +191,34 @@ impl<'a, R: io::Read> SymReader<'a, R> {
     pub fn read_msg(&mut self) -> io::Result<(u16, NexusCmd)> {
         loop {
             match self.sync() {
-                Ok(_) => {},
-                Err(e) => if e.kind() == ErrorKind::InvalidInput { continue } else { return Err(e); },
+                Ok(_) => {}
+                Err(e) => {
+                    if e.kind() == ErrorKind::InvalidInput {
+                        continue;
+                    } else {
+                        return Err(e);
+                    }
+                }
             }
             let addr = match self.read_addr() {
                 Ok(addr) => addr,
-                Err(e) => if e.kind() == ErrorKind::InvalidInput { continue } else { return Err(e); },
+                Err(e) => {
+                    if e.kind() == ErrorKind::InvalidInput {
+                        continue;
+                    } else {
+                        return Err(e);
+                    }
+                }
             };
             let cmd = match self.read_cmd() {
                 Ok(cmd) => cmd,
-                Err(e) => if e.kind() == ErrorKind::InvalidInput { continue } else { return Err(e); },
+                Err(e) => {
+                    if e.kind() == ErrorKind::InvalidInput {
+                        continue;
+                    } else {
+                        return Err(e);
+                    }
+                }
             };
             return Ok((addr, cmd));
         }
@@ -259,8 +277,8 @@ impl<'a, W: io::Write> SymWriter<'a, W> {
     }
 
     fn write_addr(&mut self, addr: u16) -> io::Result<()> {
-        for b in addr.to_be_bytes() {
-            self.write_byte(b)?;
+        for b in addr.to_be_bytes().iter() {
+            self.write_byte(*b)?;
         }
         Ok(())
     }

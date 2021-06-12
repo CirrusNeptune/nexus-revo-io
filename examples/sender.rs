@@ -2,10 +2,10 @@ use libftd2xx::{Ft232h, FtStatus, Ftdi, FtdiMpsse, MpsseSettings, TimeoutError};
 use libftd2xx_cc1101::regs::{ModFormat, SyncMode};
 use libftd2xx_cc1101::CC1101;
 use nexus_revo_io::{NexusCmd, SymWriter};
+use pretty_env_logger;
 use std::convert::TryInto;
 use std::thread;
 use std::time::Duration;
-use pretty_env_logger;
 
 fn initialize_mpsse<Ft: FtdiMpsse>(ftdi: &mut Ft) -> Result<(), TimeoutError> {
     const SETTINGS: MpsseSettings = MpsseSettings {
