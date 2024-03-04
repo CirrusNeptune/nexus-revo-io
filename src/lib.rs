@@ -64,11 +64,11 @@ enum Symbol {
 pub struct SymReader<R: io::Read> {
     reader: BitReader<R, BigEndian>,
     window: u8,
-    bit_counter: u32,
-    raw_counter: u32,
-    raw_csv: File,
-    parsed_bit: bool,
-    parsed_msg: bool,
+    //bit_counter: u32,
+    //raw_counter: u32,
+    //raw_csv: File,
+    //parsed_bit: bool,
+    //parsed_msg: bool,
 }
 
 impl<R: io::Read> SymReader<R> {
@@ -92,13 +92,13 @@ impl<R: io::Read> SymReader<R> {
         let mut ret = Self {
             reader: BitReader::endian(reader, BigEndian),
             window: 0,
-            bit_counter: 0,
-            raw_counter: 0,
-            raw_csv: File::create("/Users/cirrus/Desktop/raw.csv").unwrap(),
-            parsed_bit: false,
-            parsed_msg: false,
+            //bit_counter: 0,
+            //raw_counter: 0,
+            //raw_csv: File::create("/Users/cirrus/Desktop/raw.csv").unwrap(),
+            //parsed_bit: false,
+            //parsed_msg: false,
         };
-        ret.raw_csv.write_fmt(format_args!("x,y,type\n")).unwrap();
+        //ret.raw_csv.write_fmt(format_args!("x,y,type\n")).unwrap();
         ret
     }
 
@@ -117,8 +117,8 @@ impl<R: io::Read> SymReader<R> {
                 });
             }
         }
-        self.raw_counter += 1;
         /*
+        self.raw_counter += 1;
         self.raw_csv.write_fmt(format_args!("{},{},raw\n", self.raw_counter, bit as u32)).unwrap();
         self.raw_csv.write_fmt(format_args!("{},{},parsed\n", self.raw_counter, self.parsed_bit as u32 * 2)).unwrap();
         self.raw_csv.write_fmt(format_args!("{},{},msg\n", self.raw_counter, self.parsed_msg as u32 * 3)).unwrap();
@@ -169,14 +169,14 @@ impl<R: io::Read> SymReader<R> {
     fn read_bit_symbol(&mut self) -> io::Result<bool> {
         match self.read_symbol()? {
             Symbol::Zero => {
-                self.bit_counter += 1;
-                self.parsed_bit = false;
+                //self.bit_counter += 1;
+                //self.parsed_bit = false;
                 //println!("bit {} 0", self.bit_counter);
                 Ok(false)
             }
             Symbol::One => {
-                self.bit_counter += 1;
-                self.parsed_bit = true;
+                //self.bit_counter += 1;
+                //self.parsed_bit = true;
                 //println!("bit {} 1", self.bit_counter);
                 Ok(true)
             }
@@ -236,9 +236,9 @@ impl<R: io::Read> SymReader<R> {
             code_search |= bit as u16;
             //println!("{:4X}", code_search);
             if code_search == 0x59CF {
-                self.parsed_msg = true;
+                //self.parsed_msg = true;
                 let cmd_byte = self.read_byte()?;
-                self.parsed_msg = false;
+                //self.parsed_msg = false;
                 return Ok(cmd_byte);
             }
         }
