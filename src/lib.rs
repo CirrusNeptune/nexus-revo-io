@@ -29,31 +29,24 @@
 //! [Sender]: https://github.com/CirrusNeptune/nexus-revo-io/blob/main/examples/sender.rs
 //! [Receiver]: https://github.com/CirrusNeptune/nexus-revo-io/blob/main/examples/receiver.rs
 
-#![deny(missing_docs, unsafe_code, warnings)]
+//#![deny(missing_docs, unsafe_code)]
 
+use std::fs::File;
 use bitstream_io::{BigEndian, BitRead, BitReader, BitWrite, BitWriter};
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 use std::io;
-use std::io::{Error, ErrorKind};
+use std::io::{Error, ErrorKind, Read, Write};
+use std::ops::DerefMut;
+use libftd2xx::Ft232h;
 
 /// Remote commands supported by Revo hardware.
 #[derive(Debug, Copy, Clone, PartialEq, FromPrimitive)]
 pub enum NexusCmd {
-    /// Toggles vibration and rotation on and off while remembering the mode of each.
-    Pause = 1,
-    /// Powers off Revo device. Must be turned back on at the device to re-establish communication.
-    PowerOff = 2,
-    /// Cycles through vibration modes.
-    VibrateMode = 3,
-    /// Turns off vibration and resets vibration mode. Idempotency can be faked by transmitting this
-    /// and a certain number of [`VibrateMode`][`NexusCmd::VibrateMode`] commands.
-    VibrateOff = 4,
-    /// Cycles through rotation modes.
-    RotateMode = 5,
-    /// Turns off rotation and resets rotation mode. Idempotency can be faked by transmitting this
-    /// and a certain number of [`RotateMode`][`NexusCmd::RotateMode`] commands.
-    RotateOff = 6,
+
+    Tamper = 7,
+    Open = 10,
+    Close = 14,
 }
 
 #[derive(PartialEq)]
@@ -71,6 +64,11 @@ enum Symbol {
 pub struct SymReader<R: io::Read> {
     reader: BitReader<R, BigEndian>,
     window: u8,
+    bit_counter: u32,
+    raw_counter: u32,
+    raw_csv: File,
+    parsed_bit: bool,
+    parsed_msg: bool,
 }
 
 impl<R: io::Read> SymReader<R> {
@@ -91,14 +89,48 @@ impl<R: io::Read> SymReader<R> {
     /// let mut sym_reader = SymReader::new(&mut cc1101_reader);
     /// ```
     pub fn new(reader: R) -> Self {
-        Self {
+        let mut ret = Self {
             reader: BitReader::endian(reader, BigEndian),
             window: 0,
-        }
+            bit_counter: 0,
+            raw_counter: 0,
+            raw_csv: File::create("/Users/cirrus/Desktop/raw.csv").unwrap(),
+            parsed_bit: false,
+            parsed_msg: false,
+        };
+        ret.raw_csv.write_fmt(format_args!("x,y,type\n")).unwrap();
+        ret
     }
 
     fn read_bit(&mut self) -> io::Result<bool> {
         let bit = self.reader.read_bit()?;
+        let mut rssi_dbm: Option<i32> = None;
+        if let Some(r) = self.reader.reader() {
+            unsafe {
+                let reader: &mut &mut libftd2xx_cc1101::io::FifoReader<Ft232h, 32> = std::mem::transmute(r);
+                let rssi_dec = reader.rssi().unwrap();
+                let rssi_offset = 0;
+                rssi_dbm = Some(if rssi_dec >= 128 {
+                    (rssi_dec as i32 - 256)
+                } else {
+                    (rssi_dec as i32)
+                });
+            }
+        }
+        self.raw_counter += 1;
+        /*
+        self.raw_csv.write_fmt(format_args!("{},{},raw\n", self.raw_counter, bit as u32)).unwrap();
+        self.raw_csv.write_fmt(format_args!("{},{},parsed\n", self.raw_counter, self.parsed_bit as u32 * 2)).unwrap();
+        self.raw_csv.write_fmt(format_args!("{},{},msg\n", self.raw_counter, self.parsed_msg as u32 * 3)).unwrap();
+        if let Some(r) = rssi_dbm {
+            if (r % 2) != 0 {
+                self.raw_csv.write_fmt(format_args!("{},{}.5,rssi\n", self.raw_counter, r / 2)).unwrap();
+            } else {
+                self.raw_csv.write_fmt(format_args!("{},{}.0,rssi\n", self.raw_counter, r / 2)).unwrap();
+            }
+        }
+         */
+        //println!("{} {}", self.raw_counter, bit as u32);
         self.window <<= 1;
         self.window |= bit as u8;
         Ok(bit)
@@ -116,16 +148,15 @@ impl<R: io::Read> SymReader<R> {
 
     fn read_symbol(&mut self) -> io::Result<Symbol> {
         loop {
-            self.read_until_0()?;
-            if (self.window >> 1) & 0xf == 0xf {
-                return Ok(Symbol::SyncOnes);
-            }
             self.read_until_1()?;
-            match (self.window >> 1) & 0xf {
-                0x0 => return Ok(Symbol::SyncZeros),
-                0x8 => return Ok(Symbol::Zero),
-                0xe => return Ok(Symbol::One),
-                _ => {}
+            let mut one_count = 1_u32;
+            while self.read_bit()? {
+                one_count += 1;
+            }
+            return if one_count >= 5 {
+                Ok(Symbol::One)
+            } else {
+                Ok(Symbol::Zero)
             }
         }
     }
@@ -137,8 +168,18 @@ impl<R: io::Read> SymReader<R> {
 
     fn read_bit_symbol(&mut self) -> io::Result<bool> {
         match self.read_symbol()? {
-            Symbol::Zero => Ok(false),
-            Symbol::One => Ok(true),
+            Symbol::Zero => {
+                self.bit_counter += 1;
+                self.parsed_bit = false;
+                //println!("bit {} 0", self.bit_counter);
+                Ok(false)
+            }
+            Symbol::One => {
+                self.bit_counter += 1;
+                self.parsed_bit = true;
+                //println!("bit {} 1", self.bit_counter);
+                Ok(true)
+            }
             _ => Err(Error::new(ErrorKind::InvalidInput, "no data symbols")),
         }
     }
@@ -146,6 +187,7 @@ impl<R: io::Read> SymReader<R> {
     fn read_byte(&mut self) -> io::Result<u8> {
         let mut value = 0;
         for i in (0..4).rev() {
+            // TODO: make this a shift-only loop
             let sym0 = self.read_bit_symbol()? as u8;
             let sym1 = self.read_bit_symbol()? as u8;
             value |= (sym0 << (i * 2 + 1)) | (sym1 << (i * 2));
@@ -161,10 +203,8 @@ impl<R: io::Read> SymReader<R> {
 
     fn read_cmd(&mut self) -> io::Result<NexusCmd> {
         let byte = self.read_byte()?;
-        if byte & 0b1000 == 0 || byte & 0x7 != (byte >> 4) & 0x7 {
-            return Err(io::Error::new(ErrorKind::InvalidInput, "malformed command"));
-        }
-        FromPrimitive::from_u8(byte & 0x7)
+        println!("cmd: {:2X}", byte);
+        FromPrimitive::from_u8(byte)
             .ok_or_else(|| io::Error::new(ErrorKind::InvalidInput, "unknown command"))
     }
 
@@ -188,39 +228,19 @@ impl<R: io::Read> SymReader<R> {
     ///     println!("{:x?} {:?}", msg.0, msg.1);
     /// }
     /// ```
-    pub fn read_msg(&mut self) -> io::Result<(u16, NexusCmd)> {
+    pub fn read_msg(&mut self) -> io::Result<u8> {
+        let mut code_search = 0_u16;
         loop {
-            match self.sync() {
-                Ok(_) => {}
-                Err(e) => {
-                    if e.kind() == ErrorKind::InvalidInput {
-                        continue;
-                    } else {
-                        return Err(e);
-                    }
-                }
+            let bit = self.read_bit_symbol()?;
+            code_search <<= 1;
+            code_search |= bit as u16;
+            //println!("{:4X}", code_search);
+            if code_search == 0x59CF {
+                self.parsed_msg = true;
+                let cmd_byte = self.read_byte()?;
+                self.parsed_msg = false;
+                return Ok(cmd_byte);
             }
-            let addr = match self.read_addr() {
-                Ok(addr) => addr,
-                Err(e) => {
-                    if e.kind() == ErrorKind::InvalidInput {
-                        continue;
-                    } else {
-                        return Err(e);
-                    }
-                }
-            };
-            let cmd = match self.read_cmd() {
-                Ok(cmd) => cmd,
-                Err(e) => {
-                    if e.kind() == ErrorKind::InvalidInput {
-                        continue;
-                    } else {
-                        return Err(e);
-                    }
-                }
-            };
-            return Ok((addr, cmd));
         }
     }
 }
