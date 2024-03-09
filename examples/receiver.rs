@@ -32,7 +32,7 @@ fn initialize_mpsse<Ft: FtdiMpsse>(ftdi: &mut Ft) -> Result<(), TimeoutError> {
     err
 }
 
-async fn ft_proc(tx: &mut Sender<u8>) -> Result<(), TimeoutError> {
+async fn ft_proc(tx: &mut Sender<u8>, button_tx: &mut Sender<u8>) -> Result<(), TimeoutError> {
     let ft = Ftdi::new().map_err(|e| TimeoutError::FtStatus(e))?;
     let mut ftdi: Ft232h = ft.try_into().expect("not a Ft232h");
 
@@ -78,7 +78,11 @@ async fn ft_proc(tx: &mut Sender<u8>) -> Result<(), TimeoutError> {
             eprintln!("cc1101 io error");
             TimeoutError::FtStatus(FtStatus::IO_ERROR)
         })?;
-        tx.send_replace(msg);
+        if msg == 1 {
+            button_tx.send_replace(msg);
+        } else {
+            tx.send_replace(msg);
+        }
         match msg {
             0xe => println!("close"),
             0xa => println!("open"),
@@ -94,6 +98,7 @@ pub async fn main() {
     pretty_env_logger::init();
 
     let (mut tx, rx) = watch::channel::<u8>(0);
+    let (mut button_tx, button_rx) = watch::channel::<u8>(0);
 
     tokio::spawn(async move {
         let addr = "0.0.0.0:8124";
@@ -102,20 +107,27 @@ pub async fn main() {
         loop {
             let (mut socket, socket_addr) = listener.accept().await.unwrap();
             let mut cloned_rx = rx.clone();
+            let mut cloned_button_rx = button_rx.clone();
             tokio::spawn(async move {
                 println!("Accepted on: {}", socket_addr);
                 loop {
                     let msg = *cloned_rx.borrow_and_update();
-                    if socket
-                        .write_all(&[msg])
-                        .await
-                        .is_err() {
+                    if socket.write_all(&[msg]).await.is_err() {
                         break;
                     }
                     let mut buf = [0_u8; 1];
                     tokio::select! {
                         rx_res = cloned_rx.changed() => {
                             if rx_res.is_err() {
+                                break;
+                            }
+                        }
+                        button_rx_res = cloned_button_rx.changed() => {
+                            if button_rx_res.is_err() {
+                                break;
+                            }
+                            let button_msg = *cloned_button_rx.borrow_and_update();
+                            if socket.write_all(&[button_msg]).await.is_err() {
                                 break;
                             }
                         }
@@ -135,7 +147,7 @@ pub async fn main() {
     });
 
     loop {
-        ft_proc(&mut tx).await.ok();
+        ft_proc(&mut tx, &mut button_tx).await.ok();
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
 }
