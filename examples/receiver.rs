@@ -8,6 +8,7 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio::io::{AsyncWriteExt, AsyncReadExt};
+use tokio::sync::watch::Sender;
 
 fn initialize_mpsse<Ft: FtdiMpsse>(ftdi: &mut Ft) -> Result<(), TimeoutError> {
     const SETTINGS: MpsseSettings = MpsseSettings {
@@ -31,23 +32,27 @@ fn initialize_mpsse<Ft: FtdiMpsse>(ftdi: &mut Ft) -> Result<(), TimeoutError> {
     err
 }
 
-#[tokio::main]
-pub async fn main() {
-    pretty_env_logger::init();
-
-    let ft = Ftdi::new().expect("unable to Ftdi::new");
+async fn ft_proc(tx: &mut Sender<u8>) -> Result<(), TimeoutError> {
+    let ft = Ftdi::new().map_err(|e| TimeoutError::FtStatus(e))?;
     let mut ftdi: Ft232h = ft.try_into().expect("not a Ft232h");
 
-    initialize_mpsse(&mut ftdi).expect("unable to initialize mpsse");
+    initialize_mpsse(&mut ftdi).map_err(|_| {
+        eprintln!("mpsse init error");
+        TimeoutError::FtStatus(FtStatus::IO_ERROR)
+    })?;
 
     let mut cc1101 = CC1101::new(&mut ftdi);
     cc1101
         .initialize(|regs, pa_table| {
-            regs.set_freq(1093674); // 433.892 MHz
+            //regs.set_freq(0x10B02A); // 433.892 MHz
+            //regs.set_freq(0x10B14C); // 434.007 MHz
+            regs.set_freq(0x10B0BA); // 433.949 MHz
             regs.set_mdmcfg4(regs.mdmcfg4()
                 .with_drate_e(0x7)
                 .with_chanbw_e(3)
-                .with_chanbw_m(3)); // 0x7,0x83
+                //.with_chanbw_m(3)
+                .with_chanbw_m(0)
+            ); // 0x7,0x83
             regs.set_mdmcfg3(regs.mdmcfg3().with_drate_m(0x83)); // 2370 Baud 0x7e, 2400 0x83
             regs.set_mdmcfg2(
                 regs.mdmcfg2()
@@ -59,16 +64,39 @@ pub async fn main() {
             regs.set_agcctrl0(regs.agcctrl0().with_filter_length(FilterLength::Samples24));
             regs.set_fsctrl1(regs.fsctrl1().with_freq_if(0x6));
             *pa_table = [0, 0x60, 0, 0, 0, 0, 0, 0]; // 0dBm OOK
-        })
-        .expect("unable to initialize cc1101");
+        }).map_err(|_| {
+            eprintln!("cc1101 init error");
+            TimeoutError::FtStatus(FtStatus::IO_ERROR)
+        })?;
 
-    let mut cc1101_reader = cc1101.reader::<32>();
+    let mut cc1101_reader = cc1101.reader::<40>();
     let mut sym_reader = SymReader::new(&mut cc1101_reader);
 
-    let (tx, rx) = watch::channel::<u8>(0);
+    println!("cc1101 initialized");
+    loop {
+        let msg = sym_reader.read_msg().map_err(|_| {
+            eprintln!("cc1101 io error");
+            TimeoutError::FtStatus(FtStatus::IO_ERROR)
+        })?;
+        tx.send_replace(msg);
+        match msg {
+            0xe => println!("close"),
+            0xa => println!("open"),
+            0x7 => println!("tamper"),
+            0x1 => println!("button"),
+            _ => {}
+        }
+    }
+}
+
+#[tokio::main]
+pub async fn main() {
+    pretty_env_logger::init();
+
+    let (mut tx, rx) = watch::channel::<u8>(0);
 
     tokio::spawn(async move {
-        let addr = "127.0.0.1:8888";
+        let addr = "0.0.0.0:8124";
         let listener = TcpListener::bind(addr).await.unwrap();
         println!("Listening on: {}", addr);
         loop {
@@ -107,12 +135,7 @@ pub async fn main() {
     });
 
     loop {
-        let msg = sym_reader.read_msg().expect("bad read_msg");
-        tx.send_replace(msg);
-        match msg {
-            0xe => println!("close"),
-            0xa => println!("open"),
-            _ => {}
-        }
+        ft_proc(&mut tx).await.ok();
+        tokio::time::sleep(Duration::from_secs(1)).await;
     }
 }

@@ -104,12 +104,12 @@ impl<R: io::Read> SymReader<R> {
 
     fn read_bit(&mut self) -> io::Result<bool> {
         let bit = self.reader.read_bit()?;
+        /*
         let mut rssi_dbm: Option<i32> = None;
         if let Some(r) = self.reader.reader() {
             unsafe {
                 let reader: &mut &mut libftd2xx_cc1101::io::FifoReader<Ft232h, 32> = std::mem::transmute(r);
                 let rssi_dec = reader.rssi().unwrap();
-                let rssi_offset = 0;
                 rssi_dbm = Some(if rssi_dec >= 128 {
                     (rssi_dec as i32 - 256)
                 } else {
@@ -117,7 +117,6 @@ impl<R: io::Read> SymReader<R> {
                 });
             }
         }
-        /*
         self.raw_counter += 1;
         self.raw_csv.write_fmt(format_args!("{},{},raw\n", self.raw_counter, bit as u32)).unwrap();
         self.raw_csv.write_fmt(format_args!("{},{},parsed\n", self.raw_counter, self.parsed_bit as u32 * 2)).unwrap();
@@ -129,8 +128,8 @@ impl<R: io::Read> SymReader<R> {
                 self.raw_csv.write_fmt(format_args!("{},{}.0,rssi\n", self.raw_counter, r / 2)).unwrap();
             }
         }
-         */
         //println!("{} {}", self.raw_counter, bit as u32);
+         */
         self.window <<= 1;
         self.window |= bit as u8;
         Ok(bit)
@@ -153,7 +152,7 @@ impl<R: io::Read> SymReader<R> {
             while self.read_bit()? {
                 one_count += 1;
             }
-            return if one_count >= 5 {
+            return if one_count >= 4 {
                 Ok(Symbol::One)
             } else {
                 Ok(Symbol::Zero)
@@ -186,11 +185,9 @@ impl<R: io::Read> SymReader<R> {
 
     fn read_byte(&mut self) -> io::Result<u8> {
         let mut value = 0;
-        for i in (0..4).rev() {
-            // TODO: make this a shift-only loop
-            let sym0 = self.read_bit_symbol()? as u8;
-            let sym1 = self.read_bit_symbol()? as u8;
-            value |= (sym0 << (i * 2 + 1)) | (sym1 << (i * 2));
+        for _ in 0..8 {
+            value <<= 1;
+            value |= self.read_bit_symbol()? as u8;
         }
         Ok(value)
     }
@@ -229,13 +226,14 @@ impl<R: io::Read> SymReader<R> {
     /// }
     /// ```
     pub fn read_msg(&mut self) -> io::Result<u8> {
-        let mut code_search = 0_u16;
+        let mut code_search = 0_u32;
         loop {
             let bit = self.read_bit_symbol()?;
             code_search <<= 1;
-            code_search |= bit as u16;
-            //println!("{:4X}", code_search);
-            if code_search == 0x59CF {
+            code_search |= bit as u32;
+            if code_search & 0x1FFFFFF == 0x13CB862 {
+                return Ok(1);
+            } else if code_search & 0xFFFF == 0x59CF {
                 //self.parsed_msg = true;
                 let cmd_byte = self.read_byte()?;
                 //self.parsed_msg = false;
