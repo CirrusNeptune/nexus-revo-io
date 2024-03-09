@@ -110,6 +110,7 @@ pub async fn main() {
             let mut cloned_button_rx = button_rx.clone();
             tokio::spawn(async move {
                 println!("Accepted on: {}", socket_addr);
+                cloned_button_rx.mark_unchanged();
                 let msg = *cloned_rx.borrow_and_update();
                 if socket.write_all(&[msg]).await.is_ok() {
                     loop {
