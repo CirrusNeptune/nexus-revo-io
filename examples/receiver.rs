@@ -110,33 +110,36 @@ pub async fn main() {
             let mut cloned_button_rx = button_rx.clone();
             tokio::spawn(async move {
                 println!("Accepted on: {}", socket_addr);
-                loop {
-                    let msg = *cloned_rx.borrow_and_update();
-                    if socket.write_all(&[msg]).await.is_err() {
-                        break;
-                    }
-                    let mut buf = [0_u8; 1];
-                    tokio::select! {
-                        rx_res = cloned_rx.changed() => {
-                            if rx_res.is_err() {
-                                break;
-                            }
-                        }
-                        button_rx_res = cloned_button_rx.changed() => {
-                            if button_rx_res.is_err() {
-                                break;
-                            }
-                            let button_msg = *cloned_button_rx.borrow_and_update();
-                            if socket.write_all(&[button_msg]).await.is_err() {
-                                break;
-                            }
-                        }
-                        read_res = socket.read(&mut buf) => {
-                            match read_res {
-                                Err(_) | Ok(0) => {
-                                    break
+                let msg = *cloned_rx.borrow_and_update();
+                if socket.write_all(&[msg]).await.is_ok() {
+                    loop {
+                        let mut buf = [0_u8; 1];
+                        tokio::select! {
+                            rx_res = cloned_rx.changed() => {
+                                if rx_res.is_err() {
+                                    break;
                                 }
-                                _ => {}
+                                let msg = *cloned_rx.borrow_and_update();
+                                if socket.write_all(&[msg]).await.is_err() {
+                                    break;
+                                }
+                            }
+                            button_rx_res = cloned_button_rx.changed() => {
+                                if button_rx_res.is_err() {
+                                    break;
+                                }
+                                let button_msg = *cloned_button_rx.borrow_and_update();
+                                if socket.write_all(&[button_msg]).await.is_err() {
+                                    break;
+                                }
+                            }
+                            read_res = socket.read(&mut buf) => {
+                                match read_res {
+                                    Err(_) | Ok(0) => {
+                                        break
+                                    }
+                                    _ => {}
+                                }
                             }
                         }
                     }
