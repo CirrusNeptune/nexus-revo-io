@@ -31,14 +31,12 @@
 
 //#![deny(missing_docs, unsafe_code)]
 
-use std::fs::File;
 use bitstream_io::{BigEndian, BitRead, BitReader, BitWrite, BitWriter};
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 use std::io;
-use std::io::{Error, ErrorKind, Read, Write};
-use std::ops::DerefMut;
-use libftd2xx::Ft232h;
+use std::io::{Error, ErrorKind, Write};
+use libftd2xx::FtdiCommon;
 
 /// Remote commands supported by Revo hardware.
 #[derive(Debug, Copy, Clone, PartialEq, FromPrimitive)]
@@ -57,21 +55,57 @@ enum Symbol {
     One,
 }
 
+pub trait CsvLogger {
+    fn log_bit(&mut self, bit: bool, rssi_dbm: Option<i32>);
+}
+
+pub struct WriteCsvLogger<W: Write> {
+    csv_write: W,
+    raw_counter: u32,
+    parsed_bit: bool,
+    parsed_msg: bool,
+}
+
+impl<W: Write> WriteCsvLogger<W> {
+    pub fn new(csv_write: W) -> Self {
+        let mut ret = Self {
+            csv_write,
+            raw_counter: 0,
+            parsed_bit: false,
+            parsed_msg: false,
+        };
+        ret.csv_write.write_fmt(format_args!("x,y,type\n")).unwrap();
+        ret
+    }
+}
+
+impl<W: Write> CsvLogger for WriteCsvLogger<W> {
+    fn log_bit(&mut self, bit: bool, rssi_dbm: Option<i32>) {
+        self.raw_counter += 1;
+        self.csv_write.write_fmt(format_args!("{},{},raw\n", self.raw_counter, bit as u32)).unwrap();
+        self.csv_write.write_fmt(format_args!("{},{},parsed\n", self.raw_counter, self.parsed_bit as u32 * 2)).unwrap();
+        self.csv_write.write_fmt(format_args!("{},{},msg\n", self.raw_counter, self.parsed_msg as u32 * 3)).unwrap();
+        if let Some(r) = rssi_dbm {
+            if (r % 2) != 0 {
+                self.csv_write.write_fmt(format_args!("{},{}.5,rssi\n", self.raw_counter, r / 2)).unwrap();
+            } else {
+                self.csv_write.write_fmt(format_args!("{},{}.0,rssi\n", self.raw_counter, r / 2)).unwrap();
+            }
+        }
+    }
+}
+
 /// Bit-level symbol reader for detecting and decoding messages in Revo RF protocol.
 ///
 /// Designed to block and continuously scan for bit patterns containing coded symbols. Incoming
 /// bytes do not need to be synchronized to sync words.
-pub struct SymReader<R: io::Read> {
-    reader: BitReader<R, BigEndian>,
+pub struct SymReader<'f, 'c, Ft: FtdiCommon, const BUF_CAP: usize, Logger: CsvLogger> {
+    reader: BitReader<libftd2xx_cc1101::io::FifoReader<'f, 'c, Ft, BUF_CAP>, BigEndian>,
     window: u8,
-    //bit_counter: u32,
-    //raw_counter: u32,
-    //raw_csv: File,
-    //parsed_bit: bool,
-    //parsed_msg: bool,
+    logger: Option<Logger>,
 }
 
-impl<R: io::Read> SymReader<R> {
+impl<'f, 'c, Ft: FtdiCommon, const BUF_CAP: usize, Logger: CsvLogger> SymReader<'f, 'c, Ft, BUF_CAP, Logger> {
     /// Constructs new SymReader wrapped around [`io::Read`] trait.
     ///
     /// # Example
@@ -88,48 +122,33 @@ impl<R: io::Read> SymReader<R> {
     /// # let mut cc1101_reader = cc1101.reader::<32>();
     /// let mut sym_reader = SymReader::new(&mut cc1101_reader);
     /// ```
-    pub fn new(reader: R) -> Self {
-        let mut ret = Self {
+    pub fn new_with_logger(reader: libftd2xx_cc1101::io::FifoReader<'f, 'c, Ft, BUF_CAP>, logger: Option<Logger>) -> Self {
+        Self {
             reader: BitReader::endian(reader, BigEndian),
             window: 0,
-            //bit_counter: 0,
-            //raw_counter: 0,
-            //raw_csv: File::create("/Users/cirrus/Desktop/raw.csv").unwrap(),
-            //parsed_bit: false,
-            //parsed_msg: false,
-        };
-        //ret.raw_csv.write_fmt(format_args!("x,y,type\n")).unwrap();
-        ret
+            logger,
+        }
+    }
+
+    pub fn new(reader: libftd2xx_cc1101::io::FifoReader<'f, 'c, Ft, BUF_CAP>) -> Self {
+        Self::new_with_logger(reader, None)
     }
 
     fn read_bit(&mut self) -> io::Result<bool> {
         let bit = self.reader.read_bit()?;
-        /*
-        let mut rssi_dbm: Option<i32> = None;
-        if let Some(r) = self.reader.reader() {
-            unsafe {
-                let reader: &mut &mut libftd2xx_cc1101::io::FifoReader<Ft232h, 32> = std::mem::transmute(r);
-                let rssi_dec = reader.rssi().unwrap();
-                rssi_dbm = Some(if rssi_dec >= 128 {
-                    (rssi_dec as i32 - 256)
+        if let Some(ref mut logger) = self.logger {
+            let rssi_dbm = if let Some(r) = self.reader.reader() {
+                let rssi_dec = r.rssi()?;
+                Some(if rssi_dec >= 128 {
+                    rssi_dec as i32 - 256
                 } else {
-                    (rssi_dec as i32)
-                });
-            }
-        }
-        self.raw_counter += 1;
-        self.raw_csv.write_fmt(format_args!("{},{},raw\n", self.raw_counter, bit as u32)).unwrap();
-        self.raw_csv.write_fmt(format_args!("{},{},parsed\n", self.raw_counter, self.parsed_bit as u32 * 2)).unwrap();
-        self.raw_csv.write_fmt(format_args!("{},{},msg\n", self.raw_counter, self.parsed_msg as u32 * 3)).unwrap();
-        if let Some(r) = rssi_dbm {
-            if (r % 2) != 0 {
-                self.raw_csv.write_fmt(format_args!("{},{}.5,rssi\n", self.raw_counter, r / 2)).unwrap();
+                    rssi_dec as i32
+                })
             } else {
-                self.raw_csv.write_fmt(format_args!("{},{}.0,rssi\n", self.raw_counter, r / 2)).unwrap();
-            }
+                None
+            };
+            logger.log_bit(bit, rssi_dbm);
         }
-        //println!("{} {}", self.raw_counter, bit as u32);
-         */
         self.window <<= 1;
         self.window |= bit as u8;
         Ok(bit)

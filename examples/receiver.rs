@@ -1,14 +1,25 @@
 use libftd2xx::{Ft232h, FtStatus, Ftdi, FtdiMpsse, MpsseSettings, TimeoutError};
 use libftd2xx_cc1101::regs::{FilterLength, MagnTarget, ModFormat, SyncMode};
 use libftd2xx_cc1101::CC1101;
-use nexus_revo_io::SymReader;
+use nexus_revo_io::{SymReader, WriteCsvLogger};
 use pretty_env_logger;
 use std::convert::TryInto;
+use std::fs::File;
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio::io::{AsyncWriteExt, AsyncReadExt};
 use tokio::sync::watch::Sender;
+use std::path::PathBuf;
+use structopt::StructOpt;
+
+#[derive(Debug, StructOpt)]
+#[structopt(name = "receiver", about = "MowBark receiver")]
+struct Opt {
+    /// CSV output file
+    #[structopt(short, long, parse(from_os_str))]
+    csv_file: Option<PathBuf>,
+}
 
 fn initialize_mpsse<Ft: FtdiMpsse>(ftdi: &mut Ft) -> Result<(), TimeoutError> {
     const SETTINGS: MpsseSettings = MpsseSettings {
@@ -32,7 +43,7 @@ fn initialize_mpsse<Ft: FtdiMpsse>(ftdi: &mut Ft) -> Result<(), TimeoutError> {
     err
 }
 
-async fn ft_proc(tx: &mut Sender<u8>, button_tx: &mut Sender<u8>) -> Result<(), TimeoutError> {
+async fn ft_proc(opt: &Opt, tx: &mut Sender<u8>, button_tx: &mut Sender<u8>) -> Result<(), TimeoutError> {
     let ft = Ftdi::new().map_err(|e| TimeoutError::FtStatus(e))?;
     let mut ftdi: Ft232h = ft.try_into().expect("not a Ft232h");
 
@@ -69,8 +80,12 @@ async fn ft_proc(tx: &mut Sender<u8>, button_tx: &mut Sender<u8>) -> Result<(), 
             TimeoutError::FtStatus(FtStatus::IO_ERROR)
         })?;
 
-    let mut cc1101_reader = cc1101.reader::<40>();
-    let mut sym_reader = SymReader::new(&mut cc1101_reader);
+    let cc1101_reader = cc1101.reader::<40>();
+    let mut sym_reader = if let Some(ref path) = opt.csv_file {
+        SymReader::new_with_logger(cc1101_reader, Some(WriteCsvLogger::new(File::create(path).unwrap())))
+    } else {
+        SymReader::new(cc1101_reader)
+    };
 
     println!("cc1101 initialized");
     loop {
@@ -96,6 +111,8 @@ async fn ft_proc(tx: &mut Sender<u8>, button_tx: &mut Sender<u8>) -> Result<(), 
 #[tokio::main]
 pub async fn main() {
     pretty_env_logger::init();
+
+    let opt = Opt::from_args();
 
     let (mut tx, rx) = watch::channel::<u8>(0);
     let (mut button_tx, button_rx) = watch::channel::<u8>(0);
@@ -151,7 +168,7 @@ pub async fn main() {
     });
 
     loop {
-        ft_proc(&mut tx, &mut button_tx).await.ok();
+        ft_proc(&opt, &mut tx, &mut button_tx).await.ok();
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
 }
