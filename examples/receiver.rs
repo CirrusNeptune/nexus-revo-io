@@ -60,9 +60,8 @@ async fn ft_proc(opt: &Opt, tx: &mut Sender<u8>, button_tx: &mut Sender<u8>) -> 
             regs.set_freq(0x10B0BA); // 433.949 MHz
             regs.set_mdmcfg4(regs.mdmcfg4()
                 .with_drate_e(0x7)
-                .with_chanbw_e(3)
-                //.with_chanbw_m(3)
-                .with_chanbw_m(0)
+                .with_chanbw_e(2)
+                .with_chanbw_m(3)
             ); // 0x7,0x83
             regs.set_mdmcfg3(regs.mdmcfg3().with_drate_m(0x83)); // 2370 Baud 0x7e, 2400 0x83
             regs.set_mdmcfg2(
@@ -74,6 +73,11 @@ async fn ft_proc(opt: &Opt, tx: &mut Sender<u8>, button_tx: &mut Sender<u8>) -> 
             regs.set_agcctrl1(regs.agcctrl1().with_agc_lna_priority(false));
             regs.set_agcctrl0(regs.agcctrl0().with_filter_length(FilterLength::Samples24));
             regs.set_fsctrl1(regs.fsctrl1().with_freq_if(0x6));
+            regs.set_frend1(regs.frend1()
+                .with_lna_current(2)
+                .with_lna2mix_current(3)
+                .with_lodiv_buf_current_rx(1)
+                .with_mix_current(2));
             *pa_table = [0, 0x60, 0, 0, 0, 0, 0, 0]; // 0dBm OOK
         }).map_err(|_| {
             eprintln!("cc1101 init error");
