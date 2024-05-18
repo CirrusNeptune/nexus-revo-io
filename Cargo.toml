@@ -1,9 +1,9 @@
 [package]
-name = "nexus-revo-io"
+name = "mowbark-rf"
 version = "0.1.0"
 authors = ["Cirrus <cirrus.neptune@protonmail.com>"]
-description = "Library for Nexus Revo RF protocol"
-keywords = ["ftdi", "cc1101", "teledildonics"]
+description = "Library for Mowbark RF devices"
+keywords = ["ftdi", "cc1101"]
 categories = ["hardware-support"]
 license = "MIT"
 repository = "https://github.com/CirrusNeptune/nexus-revo-io.git"
