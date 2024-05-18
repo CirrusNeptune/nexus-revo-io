@@ -1,7 +1,7 @@
 use libftd2xx::{Ft232h, FtStatus, Ftdi, FtdiMpsse, MpsseSettings, TimeoutError};
 use libftd2xx_cc1101::regs::{FilterLength, MagnTarget, ModFormat, SyncMode};
 use libftd2xx_cc1101::CC1101;
-use nexus_revo_io::{SymReader, WriteCsvLogger};
+use mowbark_rf::{SymReader, WriteCsvLogger};
 use pretty_env_logger;
 use std::convert::TryInto;
 use std::fs::File;
