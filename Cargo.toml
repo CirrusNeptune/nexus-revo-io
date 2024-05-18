@@ -19,7 +19,7 @@ bitstream-io = "2.2.0"
 num-derive = "0.4.2"
 num-traits = "0.2.18"
 libftd2xx = "0.32.3"
-libftd2xx-cc1101 = { version = "0.1.0", path = "../libftd2xx-cc1101" }
+libftd2xx-cc1101 = { git = "https://github.com/CirrusNeptune/libftd2xx-cc1101.git", branch = "mowbark-rf" }
 tokio = { version = "1.36.0", features = ["net", "sync", "rt-multi-thread", "macros", "io-util", "time"] }
 structopt = "0.3.26"
 pretty_env_logger = "0.5.0"
@@ -27,7 +27,6 @@ pretty_env_logger = "0.5.0"
 [dev-dependencies]
 version-sync = "0.9.5"
 libftd2xx = "0.32.3"
-libftd2xx-cc1101 = { version = "0.1.0", path = "../libftd2xx-cc1101" }
 
 [features]
 static = ["libftd2xx/static", "libftd2xx-cc1101/static"]
