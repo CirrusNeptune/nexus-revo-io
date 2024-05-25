@@ -44,7 +44,7 @@ fn initialize_mpsse<Ft: FtdiMpsse>(ftdi: &mut Ft) -> Result<(), TimeoutError> {
 }
 
 async fn ft_proc(opt: &Opt, tx: &mut Sender<u8>, button_tx: &mut Sender<u8>) -> Result<(), TimeoutError> {
-    let ft = Ftdi::new().map_err(|e| TimeoutError::FtStatus(e))?;
+    let ft = Ftdi::with_serial_number("FTXZ7WQM").map_err(|e| TimeoutError::FtStatus(e))?;
     let mut ftdi: Ft232h = ft.try_into().expect("not a Ft232h");
 
     initialize_mpsse(&mut ftdi).map_err(|_| {
