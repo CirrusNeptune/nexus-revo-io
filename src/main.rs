@@ -5,7 +5,7 @@ use mowbark_rf::{SymReader, WriteCsvLogger};
 use pretty_env_logger;
 use std::convert::TryInto;
 use std::fs::File;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio::io::{AsyncWriteExt, AsyncReadExt};
@@ -97,6 +97,19 @@ async fn ft_proc(opt: &Opt, tx: &mut Sender<u8>, button_tx: &mut Sender<u8>) -> 
             eprintln!("cc1101 io error");
             TimeoutError::FtStatus(FtStatus::IO_ERROR)
         })?;
+
+        // Skip first message in 500ms window in case it's erroneous
+        let mut last_instants = [Instant::now(); 16];
+        let msg_usize = msg as usize;
+        if msg_usize < last_instants.len() {
+            let now = Instant::now();
+            let is_first = (now - last_instants[msg_usize]) > Duration::from_millis(500);
+            last_instants[msg_usize] = now;
+            if is_first {
+                continue;
+            }
+        }
+
         if msg == 1 {
             button_tx.send_replace(msg);
         } else {
